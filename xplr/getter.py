@@ -26,6 +26,7 @@ audit.setFormatter(formatter)
 audit.setLevel(logging.INFO)  # TODO give Audit its own logger
 logger.addHandler(audit)
 # END LOGGER SETUP
+print("; ".join(sys.argv))
 
 # determine if downloaded bytes are marked as a PDF document
 pdf_test = lambda response_content: response_content[:4] == b'%PDF'
@@ -121,7 +122,7 @@ async def textResults(query_text, batch_index, max_records):
     return [download_pdf(topic_dir, article_number) for article_number in get_article_numbers(query_text, batch_index, max_records)]
 
 query_text = 'computing'
-batches = sys.argv[5]
+batches = int(sys.argv[5])
 max_records = 200                                   #conf
 
 
