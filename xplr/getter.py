@@ -121,7 +121,7 @@ async def textResults(query_text, batch_index, max_records):
     return [download_pdf(topic_dir, article_number) for article_number in get_article_numbers(query_text, batch_index, max_records)]
 
 query_text = 'computing'
-batches = 2       # arg
+batches = sys.argv[4]
 max_records = 200                                   #conf
 
 
