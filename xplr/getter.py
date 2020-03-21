@@ -3,7 +3,7 @@ import sys
 apikey = sys.argv[1] #arg
 import requests # https://requests.readthedocs.io/en/master/api/
 import json
-import pdftotext
+#import pdftotext
 import asyncio
 from asyncio import Future
 import logging
@@ -96,7 +96,7 @@ def download_pdf(target_dir:str, article_number:str):
         pdf_file.write(pdf_bytes)
         logger.info(f"{article_number}: created {pdf_path}")
     return pdf_path
-
+'''
 def convert_pdf_to_text(pdf_path:str):
 
     text_path = re.sub('\\.pdf$', '\.txt', pdf_path)
@@ -114,12 +114,11 @@ def convert_pdf_to_text(pdf_path:str):
             except BaseException as be:
                 print(f"failed to create {text_path}")
                 print(be)
-
+'''
 async def textResults(query_text, batch_index, max_records):
     topic_dir = parse.quote_plus(query_text)
     os.makedirs(topic_dir, exist_ok=True)
-    for pdf_path in [download_pdf(topic_dir, article_number) for article_number in get_article_numbers(query_text, batch_index, max_records)]:
-        convert_pdf_to_text(pdf_path)
+    return [download_pdf(topic_dir, article_number) for article_number in get_article_numbers(query_text, batch_index, max_records)]
 
 query_text = 'computing'
 batches = 2       # arg
