@@ -78,11 +78,13 @@ def no_pdf(pdf_bytes:bytes, ns:dict=ns):
     :return: whether the argument is an XML document stating there's no PDF
     """
     try:
-        # TODO arXiv does not always close the header link tags in these documents. Load them in beatiful soup
-        root = etree.fromstring(pdf_bytes)
-        title:etree._Element = root.find('html:head/html:title', ns)
-        if title and title.text:
-            return title.text.startswith('No PDF')
+        # TODO arXiv does not always close the header link tags in these documents; load as html
+        html = etree.fromstring(pdf_bytes, etree.HTMLParser())
+        title_element = html.xpath('/html/head/title')
+        if title_element and len(title_element):
+            title:str = title_element[0].text
+        if title:
+            return title.startswith('No PDF')
     except ValueError as ve:
         logger.error(f'{pdf_bytes} threw {ve}')
     return False
