@@ -114,8 +114,10 @@ def no_pdf(pdf_bytes:bytes, ns:dict=ns):
         title_elements = html.xpath('/html/head/title')
         if title_elements and len(title_elements):
             title:str = title_elements[0].text
-        if title:
-            return title.startswith('No PDF')
+            if title:
+                return title.startswith('No PDF')
+        else:
+            logger.warn(f"No title element in non-pdf content\n{pdf_bytes.decode('UTF-8')}")
     except ValueError as ve:
         logger.error(f'{pdf_bytes} threw {ve}')
     return False
