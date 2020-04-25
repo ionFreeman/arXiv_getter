@@ -1,12 +1,13 @@
 import time
-
+MAX_DELAY = 18000
 base_url = "http://export.arxiv.org/api/query?"
 import sys
 import requests # https://requests.readthedocs.io/en/master/api/
 import json
 #import pdftotext
-import asyncio
-from asyncio import Future
+import concurrent
+from concurrent import futures
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError
 import logging
 import os
 import re
@@ -26,6 +27,7 @@ import logging
 # create formatter
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 console = logging.StreamHandler()
 console.setFormatter(formatter)
 console.setLevel(logging.DEBUG)
@@ -35,13 +37,42 @@ logfile.setFormatter(formatter)
 logfile.setLevel(logging.DEBUG)  # conf (ie TODO move to configuration)
 logger.addHandler(logfile)
 # END LOGGER SETUP
+logger.info("Logger initialized")
+# SET UP EXECUTOR
+executor = ThreadPoolExecutor(20, "arxiv_getter_")
+
+# SHOW RUNTIME ARGUMENTS
 print("; ".join(sys.argv))
+
+topic = sys.argv[1]
+
+max_records = int(sys.argv[2])                                   #conf
+
+# hard code the forty arXiv CS categories; they're unlikely to change before the whole system's replaced
+arxiv_categories = {"cs":['AI', 'AR', 'CC', 'CE', 'CG', 'CL', 'CR', 'CV', 'CY', 'DB', 'DC', 'DL', 'DM', 'DS', 'ET', 'FL', 'GL', 'GR', 'GT', 'HC', 'IR', 'IT', 'LG', 'LO', 'MA', 'MM', 'MS', 'NA', 'NE', 'NI', 'OH', 'OS', 'PF', 'PL', 'RO', 'SC', 'SD', 'SE', 'SI', 'SY']}
+arxiv_categories_querystring = '+OR+'.join([f"cat:{key}.{val}" for key in arxiv_categories for val in arxiv_categories[key]])
 
 # determine if downloaded bytes are marked as a PDF document
 pdf_test = lambda response_content: response_content[:4] == b'%PDF'
 ns={'arxiv': 'http://arxiv.org/schemas/atom'
     , 'atom': 'http://www.w3.org/2005/Atom'
-    , 'html': 'http://www.w3.org/1999/xhtml'}
+    , 'html': 'http://www.w3.org/1999/xhtml'
+    , 'opensearch': 'http://a9.com/-/spec/opensearch/1.1/'}
+
+
+def to_ordinal(cardinal:int):
+    cardinal_str = str(cardinal)
+    last_digit = cardinal_str[-1]
+    if last_digit in ('1', '2', '3') and (len(cardinal_str) == 1 or cardinal_str[-2] != "1"):
+        if last_digit == '1':
+            append = 'st'
+        elif last_digit == '2':
+            append = 'nd'
+        else: # last_digit == '3'
+            append = 'rd'
+    else:
+        append = 'th'
+    return f"{cardinal_str}{append}"
 
 
 def str2dict(tokens: str, field_delimiter=';', pair_delimiter='='):
@@ -80,57 +111,122 @@ def no_pdf(pdf_bytes:bytes, ns:dict=ns):
     try:
         # TODO arXiv does not always close the header link tags in these documents; load as html
         html = etree.fromstring(pdf_bytes, etree.HTMLParser())
-        title_element = html.xpath('/html/head/title')
-        if title_element and len(title_element):
-            title:str = title_element[0].text
+        title_elements = html.xpath('/html/head/title')
+        if title_elements and len(title_elements):
+            title:str = title_elements[0].text
         if title:
             return title.startswith('No PDF')
     except ValueError as ve:
         logger.error(f'{pdf_bytes} threw {ve}')
     return False
 
-def get_pdf_links(topic, batch_number = 0, batch_size = 200, init_delay_s = 3, ns:dict = ns):
 
+def detect_refresh_request(pdf_bytes:bytes, ns:dict = ns):
+    """
+    Sometimes, arXiv asks you to wait ten seconds and try again
+    :return:
+    """
+    try:
+        html = etree.fromstring(pdf_bytes, etree.HTMLParser())
+        meta_elements = html.xpath('/html/head/meta[@http-equiv="refresh"]')
+        if meta_elements and len(meta_elements):
+            meta_element_attrib:dict = meta_elements[0].attrib
+            refresh_delay = int(meta_element_attrib.get('content', "10"))
+            return refresh_delay
+        logger.debug(f"Non-refresh response detected \n{pdf_bytes.decode('UTF-8')}")
+    except ValueError as ve:
+        logger.error(f'{pdf_bytes} threw {ve}')
+    return False
+
+
+def link_from_entry(entry:etree._Element):
+    """
+from https://export.arxiv.org/denied.html
+For automated programmatic harvesting
+
+We ask that users intent on harvesting use the dedicated site `export.arxiv.org` for these purposes, which contains an up-to-date copy of the corpus and is specifically set aside for programmatic access. This will mitigate impact on readers who are using the main site interactively.
+    :param entry: extracted journal entry from atom feed
+    :return: pdf download link
+    """
+    raw_pdf_link:str = entry.find('atom:link[@type="application/pdf"]', ns).attrib['href']
+    export_pdf_link:str = raw_pdf_link.replace("//arxiv.org", "//export.arxiv.org")
+    return export_pdf_link
+
+def query_arXiv(base_url = base_url, max_records = max_records, batch_number = 0, topic=topic, init_delay_s = 3):
+    """
+    reaches out to legacy arXiv query service
+    NOTE The sort order is hard coded here
+    @:return byte array response from http call
+    """
+    # requests.get('http://export.arxiv.org/api/query?max_results=200&start=0&search_query=cat:cs+AND+all:computing&sort_by=lastUpdatedDate&sort_order=descending')
+    time.sleep(init_delay_s)
+    query_text = f'({arxiv_categories_querystring})+AND+all:{topic}'
+    query = f"{base_url}max_results={max_records}&start={batch_number * max_records}&search_query={query_text}&sort_by=lastUpdatedDate&sort_order=descending"
+    query_response = requests.get(query)
+    if query_response.status_code == 200:
+        return query_response.content
+    else:
+        logging.error(f'query failed with http status code {query_response.status_code}')
+        raise Exception(f"failed query {batch_number} {max_records} {topic}")
+
+
+def get_pdf_links(topic, batch_number = 0, max_records = max_records, init_delay_s = 3, ns:dict = ns):
     """
     arXiv API user's manual: https://arxiv.org/help/api/user-manual
+    :return (whether arXiv returned as many entried as requested, filtered list of pdf download links)
     """
-    # We can't use requests.get's query string builder as it url encodes colons and spaces, which arXiv does not permit
-    def query_arXiv(base_url = base_url, batch_size = batch_size, batch_number = batch_number, topic=topic, init_delay_s = init_delay_s):
-        """
-        reaches out to legacy arXiv query service
-        NOTE The sort order is hard coded here
-        @:return byte array response from http call
-        """
-        # requests.get('http://export.arxiv.org/api/query?max_results=200&start=0&search_query=cat:cs+AND+all:computing&sort_by=lastUpdatedDate&sort_order=descending')
-        time.sleep(init_delay_s)
-        query_text = f'cat:cs.LO+AND+all:{topic}'
-        query = f"{base_url}max_results={batch_size}&start={batch_number*batch_size}&search_query={query_text}&sort_by=lastUpdatedDate&sort_order=descending"
-        query_response = requests.get(query)
-        if query_response.status_code == 200:
-            return query_response.content
-        else:
-            logging.error(f'query failed with http status code {query_response.status_code}')
-            raise Exception(f"failed query {batch_number} {batch_size} {topic}")
+    # set up the retry backoff
+    last_delay = 0
+    current_delay = init_delay_s
+    retry = True
+    while(retry and current_delay < MAX_DELAY):
+        try:
+            # We can't use requests.get's query string builder as it url encodes colons and spaces, which arXiv does not permit
+            response_bytes = query_arXiv(base_url, max_records, batch_number, topic, current_delay)
+            # 4. Find sections with something like 'grep -E '^\s*((I?(X(I?V)?|V)I?)|I)I{0,2}\.\s+[A-Z]\s?[A-Z]+' computing/*.txt'
+            # 5. Store each section in a subfolder named for the section title
+            response_tree:etree._Element = etree.fromstring(response_bytes)
+            pdf_links = [link_from_entry(entry) for entry in response_tree.getiterator('{http://www.w3.org/2005/Atom}entry') if qualify_entry(entry, ns)]
+            # Calculate the total entries; this will tell you if you're on the last page
+            records_returned = len(response_tree.findall('atom:entry', ns))
+            (total_results, start_index, items_per_page) = map(
+                lambda param: int(response_tree.find(f"opensearch:{param}", ns).text)
+                , ('totalResults', 'startIndex', 'itemsPerPage')
+            )
+            retry = (start_index <= total_results) and (records_returned < items_per_page)
+            if retry:
+                next_delay = current_delay + last_delay
+                last_delay = current_delay
+                current_delay = next_delay
+                logger.info(f'''query return {records_returned} total entries, whereas we have only found {start_index}
+of an expected {total_results}. Trying again in {current_delay} seconds''')
+            else:
+                logger.info(f'query returned {records_returned} total entries and {len(pdf_links)} qualified entries')
+                return (records_returned == max_records, pdf_links)
+        except Exception as exc:
+            logger.error(exc)
+            raise exc
+
+def yield_pdf_links(query_text:str, max_records:int):
+    batch_index = 0
+    while batch_index == 0 or more_batches:
+        (more_batches, pdf_links) = get_pdf_links(query_text, batch_index, max_records)
+        yield pdf_links
+        batch_index += 1
 
 
-    response_bytes = query_arXiv(base_url, batch_size, batch_number, topic)
-    # 4. Find sections with something like 'grep -E '^\s*((I?(X(I?V)?|V)I?)|I)I{0,2}\.\s+[A-Z]\s?[A-Z]+' computing/*.txt'
-    # 5. Store each section in a subfolder named for the section title
-    response_tree = etree.fromstring(response_bytes)
-    pdf_links = [entry.find('atom:link[@type="application/pdf"]', ns).attrib['href'] for entry in response_tree.getiterator('{http://www.w3.org/2005/Atom}entry') if qualify_entry(entry, ns)]
-    logger.info(f'query returned {pdf_links.count} qualified entries')
-    return pdf_links
-
-
-async def download_pdf(target_dir:str, pdf_url:str):
+def download_pdf(target_dir:str, pdf_url:str):
     """
-
     :param target_dir: directory in which to store the downloaded article in Adobe's portable document format
     :param pdf_url: link to pdf
     :return: path to saved pdf file or None if the download failed
     """
+    pdf_path = f'{target_dir}/{url_to_file_name(pdf_url)}.pdf'
+    if os.path.exists(pdf_path):
+        logger.info(f"{pdf_path} already downloaded")
+        return pdf_path
     logger.debug(f"""\n\n\n*** DOWNLOADING FOR ARTICLE {pdf_url} ***""")
-
+    is_pdf = False
     # retrieve the pdf file
     # set up a fibonacci backoff
     last_backoff = 0
@@ -141,44 +237,49 @@ async def download_pdf(target_dir:str, pdf_url:str):
         #   1   2   4   7   12  20  33      54      88      143     232     376     609     986     1596    2583        4180            6764            10945           17020
         #                                                                                                               1:09:40         1:52:44         3:02:25         4:43:40
         pdf_response = requests.get(pdf_url)
+        http_status = pdf_response.status_code
         pdf_bytes = pdf_response.content
-        if pdf_test(pdf_bytes):
+        if http_status == 403:
+            raise Exception(pdf_response.content.decode('UTF-8'))
+        elif http_status == 200 and pdf_test(pdf_bytes):
+            is_pdf = True
             break
-        elif no_pdf(pdf_bytes):
-            logger.info(f"arXiv logged a mising PDF at {pdf_url}")
+        elif http_status == 200 and no_pdf(pdf_bytes, ns):
+            logger.debug(f"arXiv logged a missing PDF at {pdf_url}")
+            break
+        elif refresh_period := detect_refresh_request(pdf_bytes, ns):
+            logger.info(f"arXiv asked us to wait {refresh_period} seconds on {to_ordinal(trial)} attempt for {pdf_url}")
+            time.sleep(refresh_period)
         else:
-            logger.debug(f"{pdf_url}: download failed for {trial}th time, waiting for {backoff} seconds")
+            logger.debug(f"{pdf_url}: download failed on {to_ordinal(trial)} attempt, waiting for {backoff} seconds")
             time.sleep(backoff)
             next_backoff = last_backoff + backoff
             last_backoff = backoff
             backoff = next_backoff
-    if pdf_bytes:
+
+    if is_pdf:
         # Write the pdf file out to the file system
-        pdf_path = f'{target_dir}/{url_to_file_name(pdf_url)}.pdf'
         with open(pdf_path, 'bw', 4096, closefd=True) as pdf_file:
             pdf_file.write(pdf_bytes)
-            logger.info(f"{pdf_url}: created {pdf_path}")
+            logger.debug(f"{pdf_url}: created {pdf_path}")
         return pdf_path
 
-async def download_pdfs(query_text, batch_index, max_records):
-    topic_dir = parse.quote_plus(query_text)
+def download_pdfs(topic:str, max_records:int):
+    topic_dir = parse.quote_plus(topic)
     os.makedirs(topic_dir, exist_ok=True)
-    return await asyncio.gather(*[download_pdf(topic_dir, pdf_link) for pdf_link in get_pdf_links(query_text, batch_index, max_records)])
-
-topic = 'computing'
-batches = int(sys.argv[1])
-max_records = 200                                   #conf
+    for pdf_links in yield_pdf_links(topic, max_records):
+        for pdf_link in pdf_links:
+            yield executor.submit(download_pdf, topic, pdf_link)
 
 
-
-async def main():
-    await asyncio.gather(*[download_pdfs(topic, batch_index, max_records) for batch_index in range(batches)])
-
+def main():
+    download_path_futures = download_pdfs(topic, max_records)
+    for download_path in download_path_futures:
+        logger.debug(f"Saved PDF to {download_path.result()}")
 
 if __name__ == "__main__":
     # execute only if run as a script
-    loop = asyncio.new_event_loop()
-    loop.run_until_complete(main())
+    main()
 
 class getter:
     """ write a parallelized enqueuer to execute the API query in batches and send the article numbers to a list
