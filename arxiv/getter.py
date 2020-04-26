@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 console = logging.StreamHandler()
 console.setFormatter(formatter)
-console.setLevel(logging.DEBUG)
+console.setLevel(logging.INFO)
 logger.addHandler(console)
 logfile = logging.FileHandler(f"{__name__}.log")
 logfile.setFormatter(formatter)
@@ -143,10 +143,10 @@ def detect_refresh_request(pdf_bytes:bytes, ns:dict = ns):
 
 def link_from_entry(entry:etree._Element):
     """
-from https://export.arxiv.org/denied.html
-For automated programmatic harvesting
+    from https://export.arxiv.org/denied.html
+    For automated programmatic harvesting
 
-We ask that users intent on harvesting use the dedicated site `export.arxiv.org` for these purposes, which contains an up-to-date copy of the corpus and is specifically set aside for programmatic access. This will mitigate impact on readers who are using the main site interactively.
+    We ask that users intent on harvesting use the dedicated site `export.arxiv.org` for these purposes, which contains an up-to-date copy of the corpus and is specifically set aside for programmatic access. This will mitigate impact on readers who are using the main site interactively.
     :param entry: extracted journal entry from atom feed
     :return: pdf download link
     """
@@ -154,14 +154,14 @@ We ask that users intent on harvesting use the dedicated site `export.arxiv.org`
     export_pdf_link:str = raw_pdf_link.replace("//arxiv.org", "//export.arxiv.org")
     return export_pdf_link
 
-def query_arXiv(base_url = base_url, max_records = max_records, batch_number = 0, topic=topic, init_delay_s = 3):
+def query_arXiv(base_url = base_url, max_records = max_records, batch_number = 0, topic=topic, delay_s = 3):
     """
     reaches out to legacy arXiv query service
     NOTE The sort order is hard coded here
     @:return byte array response from http call
     """
     # requests.get('http://export.arxiv.org/api/query?max_results=200&start=0&search_query=cat:cs+AND+all:computing&sort_by=lastUpdatedDate&sort_order=descending')
-    time.sleep(init_delay_s)
+    time.sleep(delay_s)
     query_text = f'({arxiv_categories_querystring})+AND+all:{topic}'
     query = f"{base_url}max_results={max_records}&start={batch_number * max_records}&search_query={query_text}&sort_by=lastUpdatedDate&sort_order=descending"
     query_response = requests.get(query)
@@ -195,7 +195,7 @@ def get_pdf_links(topic, batch_number = 0, max_records = max_records, init_delay
                 lambda param: int(response_tree.find(f"opensearch:{param}", ns).text)
                 , ('totalResults', 'startIndex', 'itemsPerPage')
             )
-            retry = (start_index <= total_results) and (records_returned < items_per_page)
+            retry = (start_index + items_per_page <= total_results) and (records_returned < items_per_page)
             if retry:
                 next_delay = current_delay + last_delay
                 last_delay = current_delay
@@ -208,10 +208,12 @@ of an expected {total_results}. Trying again in {current_delay} seconds''')
         except Exception as exc:
             logger.error(exc)
             raise exc
+    # We kept trying, but we didn't make it
+    return (False, None)
 
 def yield_pdf_links(query_text:str, max_records:int):
     batch_index = 0
-    while batch_index == 0 or more_batches:
+    while more_batches:= True:
         (more_batches, pdf_links) = get_pdf_links(query_text, batch_index, max_records)
         yield pdf_links
         batch_index += 1
@@ -240,7 +242,7 @@ def download_pdf(target_dir:str, pdf_url:str):
         #                                                                                                               1:09:40         1:52:44         3:02:25         4:43:40
         pdf_response = requests.get(pdf_url)
         http_status = pdf_response.status_code
-        pdf_bytes = pdf_response.content
+        pdf_bytes = pdf_response.content.strip()
         if http_status == 403:
             raise Exception(pdf_response.content.decode('UTF-8'))
         elif http_status == 200 and pdf_test(pdf_bytes):
@@ -277,7 +279,8 @@ def download_pdfs(topic:str, max_records:int):
 def main():
     download_path_futures = download_pdfs(topic, max_records)
     for download_path in download_path_futures:
-        logger.debug(f"Saved PDF to {download_path.result()}")
+        if download_path.result():
+            logger.debug(f"Saved PDF to {download_path.result()}")
 
 if __name__ == "__main__":
     # execute only if run as a script
