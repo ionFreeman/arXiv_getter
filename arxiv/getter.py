@@ -1,7 +1,6 @@
 import time
 
-from arxiv.sickle_impl import Sickle_Impl
-from arxiv import getLogger
+from sickle_impl import Sickle_Impl, getLogger
 
 MAX_DELAY = 18000
 base_url = "http://export.arxiv.org/api/query?"
@@ -206,18 +205,22 @@ def get_pdf_links(id_batch: List[str], topic, batch_number=0, max_records=max_re
                 , ('totalResults', 'startIndex', 'itemsPerPage')
             )
             retry = (start_index + items_per_page <= total_results) and (records_returned < items_per_page)
-            if retry:
-                next_delay = current_delay + last_delay
-                last_delay = current_delay
-                current_delay = next_delay
-                logger.info(f'''query return {records_returned} total entries, whereas we have only found {start_index}
-of an expected {total_results}.''')
-            else:
-                logger.info(f'query returned {records_returned} total entries and {len(pdf_links)} qualified entries')
-                return (records_returned == max_records, pdf_links)
         except Exception as exc:
             logger.error(exc)
-            raise exc
+            retry = True
+            records_returned = 0
+            start_index = -1
+            total_results = 0
+
+        if retry:
+            next_delay = current_delay + last_delay
+            last_delay = current_delay
+            current_delay = next_delay
+            logger.info(f'''query return {records_returned} total entries, whereas we have only found {start_index}
+of an expected {total_results}.''')
+        else:
+            logger.info(f'query returned {records_returned} total entries and {len(pdf_links)} qualified entries')
+            return (records_returned == max_records, pdf_links)
     # We kept trying, but we didn't make it
     return (False, None)
 
@@ -242,7 +245,7 @@ def download_pdf(target_dir: str, pdf_url: str):
     """
     pdf_path = f'{target_dir}/{url_to_file_name(pdf_url)}.pdf'
     if os.path.exists(pdf_path):
-        logger.info(f"{pdf_path} already downloaded")
+        logger.debug(f"{pdf_path} already downloaded")
         return pdf_path
     logger.debug(f"""\n\n\n*** DOWNLOADING FOR ARTICLE {pdf_url} ***""")
     is_pdf = False
@@ -301,7 +304,9 @@ def main():
                 if download_path.result(3600):
                     logger.debug(f"Saved PDF to {download_path.result()}")
             except futures.TimeoutError as te:
-                logger.warning(f"{download_path} timed out")
+                logger.error(f"{download_path} timed out")
+            except requests.exceptions.ConnectionError as ce:
+                logger.error(f"{download_path} download failed with {ce}")
 
 
 if __name__ == "__main__":
