@@ -32,7 +32,21 @@ class Sickle_Impl:
 
     def get_ids(self, set: str = 'cs'):
         counter = 0
-        for item in self.arxiv.ListRecords(metadataPrefix=self.metadata_format, set=set):
+        # OMG, the call to __next__ blows up on a 503 refresh response. I can't use iteration
+        recerator:OAIItemIterator = self.arxiv.ListRecords(metadataPrefix=self.metadata_format, set=set)
+
+        while True: # no assignment expressions in 3.7
+            try:
+                item = recerator.next()
+            except StopIteration as si:
+                break
+            except requests.exceptions.HTTPError as he:
+                if he.response.status_code == "503":
+                    logger.error(f"waiting ten seconds to resume harvesting ids from the OAI API due to HTTPError {he}")
+                    time.sleep(10)
+                    continue
+                else:
+                    raise(he)
             counter += 1
             # logger.trace(f"item {counter} is {item.header.identifier}")
             ids = item.metadata['id']
