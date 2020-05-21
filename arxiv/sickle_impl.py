@@ -42,7 +42,7 @@ class Sickle_Impl:
             except StopIteration as si:
                 break
             except HTTPError as he:
-                if he.response.status_code == "503":
+                if he.response.status_code == 503:
                     logger.error(f"waiting ten seconds to resume harvesting ids from the OAI API due to HTTPError {he}")
                     time.sleep(10)
                     continue
