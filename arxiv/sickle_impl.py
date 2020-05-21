@@ -47,6 +47,7 @@ class Sickle_Impl:
                     time.sleep(10)
                     continue
                 else:
+                    logger.error(f"OAIITemIterator.next failed with HTTPError {he.errno} Status Code {he.response.status_code} with content {';'.join(he.args)}")
                     raise(he)
             counter += 1
             # logger.trace(f"item {counter} is {item.header.identifier}")
