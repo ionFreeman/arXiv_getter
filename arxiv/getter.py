@@ -261,6 +261,7 @@ def download_pdf(target_dir: str, pdf_url: str):
         pdf_response = requests.get(pdf_url)
         http_status = pdf_response.status_code
         pdf_bytes = pdf_response.content.strip()
+        refresh_period = detect_refresh_request(pdf_bytes, ns) # Had to downgrade to 3.6; had an assignment operator below for this
         if http_status == 403:
             raise Exception(pdf_response.content.decode('UTF-8'))
         elif http_status == 200 and pdf_test(pdf_bytes):
@@ -269,7 +270,7 @@ def download_pdf(target_dir: str, pdf_url: str):
         elif http_status == 200 and no_pdf(pdf_bytes, ns):
             logger.debug(f"arXiv logged a missing PDF at {pdf_url}")
             break
-        elif refresh_period := detect_refresh_request(pdf_bytes, ns):
+        elif refresh_period:
             logger.info(f"arXiv asked us to wait {refresh_period} seconds on {to_ordinal(trial)} attempt for {pdf_url}")
             time.sleep(refresh_period)
         else:
