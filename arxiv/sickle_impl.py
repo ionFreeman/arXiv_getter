@@ -2,6 +2,7 @@ import sickle
 from sickle.iterator import OAIItemIterator
 from requests.exceptions import HTTPError
 import logging
+import time
 
 import logging
 def getLogger(module:str, console_level=logging.INFO, file_level=logging.DEBUG):
