@@ -1,10 +1,12 @@
 import sickle
 from sickle.iterator import OAIItemIterator
-from requests.exceptions import HTTPError
+from requests.exceptions import HTTPError, ConnectionError
+from requests import Response
 import logging
 import time
 
-import logging
+MAX_CONSECUTIVE_REQUEST_FAILURES:int = 5
+
 def getLogger(module:str, console_level=logging.INFO, file_level=logging.DEBUG):
     # create formatter
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -37,19 +39,31 @@ class Sickle_Impl:
         # OMG, the call to __next__ blows up on a 503 refresh response. I can't use iteration
         recerator:OAIItemIterator = self.arxiv.ListRecords(metadataPrefix=self.metadata_format, set=set)
 
+        consecutive_failures = 0
         while True: # no assignment expressions in 3.7
             try:
                 item = recerator.next()
+                consecutive_failures = 0
             except StopIteration as si:
                 break
             except HTTPError as he:
-                if he.response.status_code == 503:
-                    logger.error(f"waiting ten seconds to resume harvesting ids from the OAI API due to HTTPError {he}")
-                    time.sleep(10)
-                    continue
-                else:
-                    logger.error(f"OAIITemIterator.next failed with HTTPError {he.errno} Status Code {he.response.status_code} with content {';'.join(he.args)}")
+                logger.error(he)
+                consecutive_failures+=1
+                resp:Response = he.response
+                if resp.status_code != 503 or consecutive_failures < MAX_CONSECUTIVE_REQUEST_FAILURES:
+                    logger.error(f"OAIITemIterator.next failed with HTTPError {he.errno} Status Code {resp.status_code} with content {';'.join(he.args)}")
+                    raise (he)
+                logger.error(f"waiting ten seconds to resume harvesting ids from the OAI API due to HTTPError {he}")
+                time.sleep(10)
+                continue
+            except ConnectionError as ce:
+                consecutive_failures+=1
+                logger.error(oe)
+                if consecutive_failures < MAX_CONSECUTIVE_REQUEST_FAILURES:
                     raise(he)
+                logger.info("Taking a minute")
+                time.sleep(60)
+                continue
             counter += 1
             # logger.trace(f"item {counter} is {item.header.identifier}")
             ids = item.metadata['id']

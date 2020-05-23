@@ -118,7 +118,7 @@ def no_pdf(pdf_bytes: bytes, ns: dict = ns):
         else:
             logger.warn(f"No title element in non-pdf content\n{pdf_bytes.decode('UTF-8')}")
     except ValueError as ve:
-        logger.error(f'{pdf_bytes} threw {ve}')
+        logger.error(f'Downloaded content of lenth {len(pdf_bytes)} starting with {pdf_bytes[0:100]} threw {ve}')
     return False
 
 
@@ -261,6 +261,9 @@ def download_pdf(target_dir: str, pdf_url: str):
         pdf_response = requests.get(pdf_url)
         http_status = pdf_response.status_code
         pdf_bytes = pdf_response.content.strip()
+        # Some PDFs start with a UTF-8 byte order mark
+        if b'\xef\xbb\xbf' == pdf_bytes:
+            pdf_bytes=pdf_bytes[3:]
         refresh_period = detect_refresh_request(pdf_bytes, ns) # Had to downgrade to 3.6; had an assignment operator below for this
         if http_status == 403:
             raise Exception(pdf_response.content.decode('UTF-8'))
