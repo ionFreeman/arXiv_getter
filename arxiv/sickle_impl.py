@@ -58,9 +58,9 @@ class Sickle_Impl:
                 continue
             except ConnectionError as ce:
                 consecutive_failures+=1
-                logger.error(oe)
+                logger.error(ce)
                 if consecutive_failures < MAX_CONSECUTIVE_REQUEST_FAILURES:
-                    raise(he)
+                    raise(ce)
                 logger.info("Taking a minute")
                 time.sleep(60)
                 continue
