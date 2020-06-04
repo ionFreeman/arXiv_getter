@@ -40,29 +40,39 @@ class Sickle_Impl:
         recerator:OAIItemIterator = self.arxiv.ListRecords(metadataPrefix=self.metadata_format, set=set)
 
         consecutive_failures = 0
+        backoff = 60
+        last_backoff = 0
         while True: # no assignment expressions in 3.7
             try:
                 item = recerator.next()
                 consecutive_failures = 0
+                backoff = 10
+                last_backoff = 0
             except StopIteration as si:
                 break
             except HTTPError as he:
                 logger.error(he)
                 consecutive_failures+=1
                 resp:Response = he.response
-                if resp.status_code != 503 or consecutive_failures < MAX_CONSECUTIVE_REQUEST_FAILURES:
+                if resp.status_code != 503 or consecutive_failures > MAX_CONSECUTIVE_REQUEST_FAILURES:
                     logger.error(f"OAIITemIterator.next failed with HTTPError {he.errno} Status Code {resp.status_code} with content {';'.join(he.args)}")
                     raise (he)
-                logger.error(f"waiting ten seconds to resume harvesting ids from the OAI API due to HTTPError {he}")
-                time.sleep(10)
+                logger.error(f"waiting {backoff} seconds to resume harvesting ids from the OAI API due to HTTPError {he}")
+                time.sleep(backoff)
+                hold_backoff = backoff
+                backoff = backoff + last_backoff
+                last_backoff = hold_backoff
                 continue
             except ConnectionError as ce:
                 consecutive_failures+=1
                 logger.error(ce)
-                if consecutive_failures < MAX_CONSECUTIVE_REQUEST_FAILURES:
+                if consecutive_failures > MAX_CONSECUTIVE_REQUEST_FAILURES:
                     raise(ce)
-                logger.info("Taking a minute")
-                time.sleep(60)
+                logger.info(f"Taking {backoff} seconds")
+                time.sleep(backoff)
+                hold_backoff = backoff
+                backoff = backoff + last_backoff
+                last_backoff = hold_backoff
                 continue
             counter += 1
             # logger.trace(f"item {counter} is {item.header.identifier}")

@@ -136,7 +136,8 @@ def detect_refresh_request(pdf_bytes: bytes, ns: dict = ns):
             return refresh_delay
         logger.debug(f"Non-refresh response detected \n{pdf_bytes.decode('UTF-8')}")
     except ValueError as ve:
-        logger.error(f'{pdf_bytes} threw {ve}')
+        # as of this writing, pdf files get processed through here (after the version downgrade)
+        logger.debug(f'Downloaded content of length {len(pdf_bytes)} starting with {pdf_bytes[0:100]} threw {ve}')
     return False
 
 
@@ -264,6 +265,7 @@ def download_pdf(target_dir: str, pdf_url: str):
         # Some PDFs start with a UTF-8 byte order mark
         if b'\xef\xbb\xbf' == pdf_bytes[0:3]:
             pdf_bytes=pdf_bytes[3:]
+            logger.debug(f"removed leading BOM from {pdf_url} returned with HTTP status {http_status}")
         refresh_period = detect_refresh_request(pdf_bytes, ns) # Had to downgrade to 3.6; had an assignment operator below for this
         if http_status == 403:
             raise Exception(pdf_response.content.decode('UTF-8'))
