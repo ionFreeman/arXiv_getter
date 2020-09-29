@@ -1,19 +1,16 @@
 import time
 
-from sickle_impl import Sickle_Impl, getLogger
+from sickle_impl import Sickle_Impl, getLogger, to_ordinal, detect_refresh_request, ns
 
 MAX_DELAY = 18000
 base_url = "http://export.arxiv.org/api/query?"
 import sys
 import requests  # https://requests.readthedocs.io/en/master/api/
-import json
 # import pdftotext
-import concurrent
 from concurrent import futures
-from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError
+from concurrent.futures import ThreadPoolExecutor
 import logging
 import os
-import re
 from urllib import parse
 from lxml import etree
 from typing import List
@@ -50,25 +47,6 @@ arxiv_categories_querystring = '+OR+'.join(
 
 # determine if downloaded bytes are marked as a PDF document
 pdf_test = lambda response_content: response_content[:4] == b'%PDF'
-ns = {'arxiv': 'http://arxiv.org/schemas/atom'
-    , 'atom': 'http://www.w3.org/2005/Atom'
-    , 'html': 'http://www.w3.org/1999/xhtml'
-    , 'opensearch': 'http://a9.com/-/spec/opensearch/1.1/'}
-
-
-def to_ordinal(cardinal: int):
-    cardinal_str = str(cardinal)
-    last_digit = cardinal_str[-1]
-    if last_digit in ('1', '2', '3') and (len(cardinal_str) == 1 or cardinal_str[-2] != "1"):
-        if last_digit == '1':
-            append = 'st'
-        elif last_digit == '2':
-            append = 'nd'
-        else:  # last_digit == '3'
-            append = 'rd'
-    else:
-        append = 'th'
-    return f"{cardinal_str}{append}"
 
 
 def str2dict(tokens: str, field_delimiter=';', pair_delimiter='='):
@@ -119,25 +97,6 @@ def no_pdf(pdf_bytes: bytes, ns: dict = ns):
             logger.warn(f"No title element in non-pdf content\n{pdf_bytes.decode('UTF-8')}")
     except ValueError as ve:
         logger.error(f'Downloaded content of length {len(pdf_bytes)} starting with {pdf_bytes[0:100]} threw {ve}')
-    return False
-
-
-def detect_refresh_request(pdf_bytes: bytes, ns: dict = ns):
-    """
-    Sometimes, arXiv asks you to wait ten seconds and try again
-    :return:
-    """
-    try:
-        html = etree.fromstring(pdf_bytes, etree.HTMLParser())
-        meta_elements = html.xpath('/html/head/meta[@http-equiv="refresh"]')
-        if meta_elements and len(meta_elements):
-            meta_element_attrib: dict = meta_elements[0].attrib
-            refresh_delay = int(meta_element_attrib.get('content', "10"))
-            return refresh_delay
-        logger.debug(f"Non-refresh response detected \n{pdf_bytes.decode('UTF-8')}")
-    except ValueError as ve:
-        # as of this writing, pdf files get processed through here (after the version downgrade)
-        logger.debug(f'Downloaded content of length {len(pdf_bytes)} starting with {pdf_bytes[0:100]} threw {ve}')
     return False
 
 

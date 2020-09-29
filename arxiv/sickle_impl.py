@@ -1,4 +1,5 @@
 import sickle
+from lxml import etree
 from sickle.iterator import OAIItemIterator
 from requests.exceptions import HTTPError, ConnectionError
 from requests import Response
@@ -36,9 +37,19 @@ class Sickle_Impl:
 
     def get_ids(self, set: str = 'cs'):
         counter = 0
-        # OMG, the call to __next__ blows up on a 503 refresh response. I can't use iteration
-        recerator:OAIItemIterator = self.arxiv.ListRecords(metadataPrefix=self.metadata_format, set=set)
-
+        trial = 0
+        recerator:OAIItemIterator = None
+        while recerator == None:
+            # OMG, the call to __next__ blows up on a 503 refresh response. I can't use iteration
+            try:
+                recerator = self.arxiv.ListRecords(metadataPrefix=self.metadata_format, set=set)
+            except HTTPError as he:
+                refresh_period = detect_refresh_request(he.response.content.strip(), ns)
+                if trial >= MAX_CONSECUTIVE_REQUEST_FAILURES:
+                    raise he
+                logger.info(f"arXiv asked us to wait {refresh_period} seconds on {to_ordinal(trial)} attempt in get_ids")
+                trial = trial + 1
+                time.sleep(refresh_period)
         consecutive_failures = 0
         backoff = 60
         last_backoff = 0
@@ -57,11 +68,16 @@ class Sickle_Impl:
                 if resp.status_code != 503 or consecutive_failures > MAX_CONSECUTIVE_REQUEST_FAILURES:
                     logger.error(f"OAIITemIterator.next failed with HTTPError {he.errno} Status Code {resp.status_code} with content {';'.join(he.args)}")
                     raise (he)
-                logger.error(f"waiting {backoff} seconds to resume harvesting ids from the OAI API due to HTTPError {he}")
-                time.sleep(backoff)
-                hold_backoff = backoff
-                backoff = backoff + last_backoff
-                last_backoff = hold_backoff
+                refresh_period = detect_refresh_request(he.response.content.strip(), ns)
+                if(refresh_period):
+                    delay = refresh_period
+                else:
+                    delay = backoff
+                    hold_backoff = backoff
+                    backoff = backoff + last_backoff
+                    last_backoff = hold_backoff
+                logger.error(f"waiting {delay} seconds to resume harvesting ids from the OAI API due to HTTPError {he}")
+                time.sleep(delay)
                 continue
             except ConnectionError as ce:
                 consecutive_failures+=1
@@ -92,3 +108,49 @@ class Sickle_Impl:
             if current_batch_size >= batch_size:
                 yield current_batch
                 current_batch = list()
+
+
+def to_ordinal(cardinal: int):
+    cardinal_str = str(cardinal)
+    last_digit = cardinal_str[-1]
+    if last_digit in ('1', '2', '3') and (len(cardinal_str) == 1 or cardinal_str[-2] != "1"):
+        if last_digit == '1':
+            append = 'st'
+        elif last_digit == '2':
+            append = 'nd'
+        else:  # last_digit == '3'
+            append = 'rd'
+    else:
+        append = 'th'
+    return f"{cardinal_str}{append}"
+
+
+ns = {'arxiv': 'http://arxiv.org/schemas/atom'
+    , 'atom': 'http://www.w3.org/2005/Atom'
+    , 'html': 'http://www.w3.org/1999/xhtml'
+    , 'opensearch': 'http://a9.com/-/spec/opensearch/1.1/'}
+
+
+def detect_refresh_request(pdf_bytes: bytes, ns: dict = ns):
+    """
+    Sometimes, arXiv asks you to wait ten seconds and try again
+    :return:
+    """
+    try:
+        html:etree._Element = etree.fromstring(pdf_bytes, etree.HTMLParser())
+        meta_elements = html.xpath('/html/head/meta[@http-equiv="refresh"]')
+        if meta_elements and len(meta_elements):
+            meta_element_attrib: dict = meta_elements[0].attrib
+            refresh_delay = int(meta_element_attrib.get('content', "10"))
+            return refresh_delay
+        # No refresh header, look in the text
+        import re
+        refresh_re = re.compile('(?i)Retry after (\d+) seconds')
+        periods = [refresh_re.match(period.text).group(1) for period in html.iterdescendants() if period.text and refresh_re.match(period.text)]
+        if periods:
+            return int(periods[0])
+        logger.debug(f"Non-refresh response detected \n{pdf_bytes.decode('UTF-8')}")
+    except ValueError as ve:
+        # as of this writing, pdf files get processed through here (after the version downgrade)
+        logger.debug(f'Downloaded content of length {len(pdf_bytes)} starting with {pdf_bytes[0:100]} threw {ve}')
+    return False
