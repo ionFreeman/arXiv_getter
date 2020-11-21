@@ -12,4 +12,3 @@ class Test(TestCase):
         assert increment_roman_numeral("CDXCIX") == "D"
         assert increment_roman_numeral("MCMLXXI") == "MCMLXXII"
         assert increment_roman_numeral("MMCMXCIX") == "MMM"
-
